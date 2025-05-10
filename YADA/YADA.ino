@@ -519,7 +519,7 @@ void loop() {
              String addr_n = "";
              String wif_n = "";
              String addr_n_plus_1 = "";
-             String h_h_pk_n_plus_2 = "";
+             String addr_n_plus_2 = "";
              bool derivation_ok = true;
              String error_msg_detail = "";
 
@@ -570,45 +570,18 @@ void loop() {
                  } else {
                      PublicKey pk_n2 = hd_priv_n2.publicKey();
                      if (!pk_n2.isValid()) {
-                         error_msg_detail = "Pk_n+2 Fail"; derivation_ok = false;
+                         error_msg_detail = "Addr_n+2 Fail"; derivation_ok = false;
                      } else {
-                         String pk_n2_hex = pk_n2.toString();
-                         if (pk_n2_hex.length() > 0 && pk_n2_hex.length() % 2 == 0) {
-                             size_t len_bytes = pk_n2_hex.length() / 2;
-                             uint8_t* pk_bytes = (uint8_t*)malloc(len_bytes);
-                             if (!pk_bytes) {
-                                 error_msg_detail = "Mem H(H(Pk))"; derivation_ok = false;
-                             } else {
-                                 bool conv_ok = true;
-                                 for (size_t i = 0; i < len_bytes; i++) {
-                                     unsigned int val;
-                                     if ((i*2+2) > pk_n2_hex.length() || sscanf(pk_n2_hex.substring(i * 2, i * 2 + 2).c_str(), "%x", &val) != 1) {
-                                         error_msg_detail = "Hex H(H(Pk))"; conv_ok = false; break;
-                                     }
-                                     pk_bytes[i] = (uint8_t)val;
-                                 }
-                                 if (conv_ok) {
-                                     uint8_t hash1[32], hash2[32];
-                                     if (sha256Raw(pk_bytes, len_bytes, hash1) && sha256Raw(hash1, 32, hash2)) { // Needs global sha256Raw
-                                         h_h_pk_n_plus_2 = bytesToHex(hash2, 32); // Needs global bytesToHex
-                                         if (h_h_pk_n_plus_2.length() != 64) {
-                                             error_msg_detail = "Len H(H(Pk))"; derivation_ok = false;
-                                         }
-                                     } else {
-                                         error_msg_detail = "Hash H(H(Pk)) Fail"; derivation_ok = false;
-                                     }
-                                 } else { derivation_ok = false; }
-                                 free(pk_bytes);
-                             }
-                         } else {
-                             error_msg_detail = "Pk_n+2 Hex Invalid"; derivation_ok = false;
+                         addr_n_plus_2 = pk_n2.address();
+                         if (addr_n_plus_2.length() == 0) {
+                             error_msg_detail = "Addr_n+2 Gen Fail"; derivation_ok = false;
                          }
                      }
                  }
              }
 
              if (derivation_ok) {
-                 String combinedQRData = addr_n + "|" + wif_n + "|" + addr_n_plus_1 + "|" + h_h_pk_n_plus_2;
+                 String combinedQRData = addr_n + "|" + wif_n + "|" + addr_n_plus_1 + "|" + addr_n_plus_2;
                  Serial.println("QR Data: " + combinedQRData);
                  Serial.println("QR Data Length: " + String(combinedQRData.length()));
                  int estimatedQrVersion = 11;

@@ -73,6 +73,8 @@ AppState currentState = STATE_INITIALIZING;
 String errorMessage = "";
 String generatedMnemonic = "";
 String loadedMnemonic = "";
+HDPrivateKey hdWalletKey; // Stores m/0'/index0'/index1'/index2'/index3'
+String baseWalletPath; // Stores m/0'/index0'/index1'/index2'/index3'
 
 // --- Password Entry State ---
 const int PIN_LENGTH = 6;
@@ -92,7 +94,42 @@ String sha256Hex(const uint8_t* data, size_t len) { uint8_t h[32]; mbedtls_sha25
 String hashPublicKey(const PublicKey& pk) { String h=pk.toString(); if(h.length()==0) return "Hashing Error"; if(h.length()!=66&&h.length()!=130) Serial.printf("W: Bad Pk len: %d\n",h.length()); size_t l=h.length()/2; if(l==0) return "Hashing Error"; uint8_t* b=(uint8_t*)malloc(l); if(!b) return "Hashing Error"; for(size_t i=0;i<l;i++){unsigned int v; if((i*2+1)>=h.length()||sscanf(h.substring(i*2,i*2+2).c_str(),"%x",&v)!=1){free(b);return"Hashing Error";}b[i]=(uint8_t)v;} String r=sha256Hex(b,l); free(b); return r; }
 bool sha256Raw(const uint8_t* d, size_t l, uint8_t o[32]){mbedtls_sha256_context c;mbedtls_sha256_init(&c);if(mbedtls_sha256_starts(&c,0)!=0){mbedtls_sha256_free(&c);return false;}if(mbedtls_sha256_update(&c,d,l)!=0){mbedtls_sha256_free(&c);return false;}if(mbedtls_sha256_finish(&c,o)!=0){mbedtls_sha256_free(&c);return false;}mbedtls_sha256_free(&c);return true;}
 String bytesToHex(const uint8_t* b, size_t l){String s="";s.reserve(l*2);for(size_t i=0;i<l;i++){if(b[i]<0x10)s+="0";s+=String(b[i],HEX);}return s;}
-uint32_t deriveIndexCpp(const char* p, int l){String i=String(p)+String(l); uint8_t h[32]; mbedtls_sha256_context c; mbedtls_sha256_init(&c); mbedtls_sha256_starts(&c,0); mbedtls_sha256_update(&c,(const unsigned char*)i.c_str(),i.length()); mbedtls_sha256_finish(&c,h); mbedtls_sha256_free(&c); uint32_t r; memcpy(&r,h,4); r=ntohl(r); return r&0x7FFFFFFF;}
+uint32_t deriveIndexCpp(const char* factor, int level) {
+    char input[16];
+    snprintf(input, sizeof(input), "%s%d", factor, level);
+    
+    Serial.printf("Input for level %d: '%s' (bytes: ", level, input);
+    for (size_t i = 0; i < strlen(input); i++) {
+        Serial.print((uint8_t)input[i], HEX);
+        Serial.print(" ");
+    }
+    Serial.println(")");
+
+    uint8_t hash[32];
+    if (!sha256Raw((const uint8_t*)input, strlen(input), hash)) {
+        Serial.println("E: SHA256 failed");
+        return 0;
+    }
+
+    char hashHex[65];
+    for (size_t i = 0; i < 32; i++) {
+        snprintf(hashHex + 2 * i, 3, "%02x", hash[i]);
+    }
+    Serial.printf("Hash for level %d: %s\n", level, hashHex);
+
+    const uint32_t MOD = 2147483647;
+    uint64_t value = 0;
+    for (size_t i = 0; i < 32; i++) {
+        uint8_t byte = hash[i];
+        value = (value * 16) + (byte >> 4);
+        value %= MOD;
+        value = (value * 16) + (byte & 0x0F);
+        value %= MOD;
+    }
+
+    Serial.printf("Index for level %d: %u\n", level, (uint32_t)value);
+    return (uint32_t)value;
+}
 String generateMnemonicFromEntropy(const uint8_t* e, size_t len){if(len!=16)return""; uint8_t cs_len=(len*8)/32; uint8_t h[32]; mbedtls_sha256_context c; mbedtls_sha256_init(&c); mbedtls_sha256_starts(&c,0); mbedtls_sha256_update(&c,e,len); mbedtls_sha256_finish(&c,h); mbedtls_sha256_free(&c); uint8_t cs_byte=h[0]; uint8_t mask=0xFF<<(8-cs_len); uint8_t cs_bits=cs_byte&mask; int total_bits=(len*8)+cs_len; int num_words=total_bits/11; String m=""; m.reserve(120); uint16_t w_idx=0; int bit_count=0; for(int i=0;i<total_bits;i++){int byte_idx=i/8; int bit_in_byte=7-(i%8); uint8_t curr_byte; if(byte_idx<len){curr_byte=e[byte_idx];}else{int cs_bit_idx=i-(len*8); int shift=7-cs_bit_idx; curr_byte=cs_bits; bit_in_byte=shift;} uint8_t bit_val=(curr_byte>>bit_in_byte)&1; w_idx=(w_idx<<1)|bit_val; bit_count++; if(bit_count==11){if(w_idx>=2048)return""; m+=String(wordlist[w_idx]); if((i+1)<total_bits)m+=" "; w_idx=0; bit_count=0;}} return m;}
 
 // ========================================
@@ -427,50 +464,92 @@ void loop() {
       break;
 
     case STATE_PASSWORD_ENTRY:
-        if (redrawScreen) { showPasswordEntryScreen(); } // Needs global function
+        if (redrawScreen) { showPasswordEntryScreen(); }
 
-        if (buttonLeftTriggered) { // Needs global buttonLeftTriggered
-            currentDigitValue = (currentDigitValue + 1) % 10; // Needs global currentDigitValue
+        if (buttonLeftTriggered) {
+            currentDigitValue = (currentDigitValue + 1) % 10;
             showPasswordEntryScreen();
         }
-        else if (buttonRightTriggered) { // Needs global buttonRightTriggered
-            password[currentDigitIndex] = currentDigitValue + '0'; // Needs global password, currentDigitIndex
+        else if (buttonRightTriggered) {
+            password[currentDigitIndex] = currentDigitValue + '0';
             currentDigitIndex++;
             currentDigitValue = 0;
 
-            if (currentDigitIndex >= PIN_LENGTH) { // Needs global PIN_LENGTH
+            if (currentDigitIndex >= PIN_LENGTH) {
                 password[PIN_LENGTH] = '\0';
-                Serial.print("L: Full PIN Entered: "); Serial.println(password);
-                passwordConfirmed = true; // Needs global passwordConfirmed
+                Serial.print("L: Full PIN Entered: ");
+                Serial.print(password);
+                Serial.print(" (bytes: ");
+                for (int i = 0; i <= PIN_LENGTH; i++) {
+                    Serial.print((uint8_t)password[i], HEX);
+                    Serial.print(" ");
+                }
+                Serial.println(")");
+                passwordConfirmed = true;
                 Serial.println("L: Checking provision status...");
 
-                bool ldOK=false, isPrv=false;
-                if(prefs.begin(PREFS_NAMESPACE, true)){
-                    isPrv=prefs.getBool(PROVISIONED_KEY,false);
-                    if(isPrv && prefs.isKey(MNEMONIC_KEY)){
-                        loadedMnemonic = prefs.getString(MNEMONIC_KEY,"");
-                        if(loadedMnemonic.length()>10) ldOK=true;
+                bool ldOK = false, isPrv = false;
+                if (prefs.begin(PREFS_NAMESPACE, true)) {
+                    isPrv = prefs.getBool(PROVISIONED_KEY, false);
+                    if (isPrv && prefs.isKey(MNEMONIC_KEY)) {
+                        loadedMnemonic = prefs.getString(MNEMONIC_KEY, "");
+                        if (loadedMnemonic.length() > 10) ldOK = true;
                     }
                     prefs.end();
                 }
                 Serial.printf("L: Loaded Mnemonic OK = %d, Provisioned = %d\n", ldOK, isPrv);
 
-                if(ldOK){
-                    currentState=STATE_WALLET_VIEW;
-                    currentRotationIndex=0;
+                if (ldOK) {
+                    HDPrivateKey hdMasterKey(loadedMnemonic, "", &Mainnet);
+                    if (!hdMasterKey.isValid()) {
+                        errorMessage = "MasterKey Invalid";
+                        displayErrorScreen(errorMessage);
+                        passwordConfirmed = false;
+                        currentDigitIndex = 0;
+                        currentDigitValue = 0;
+                        memset(password, '_', PIN_LENGTH);
+                        password[PIN_LENGTH] = '\0';
+                        break;
+                    }
+
+                    hdWalletKey = hdMasterKey.derive("0'");
+                    if (!hdWalletKey.isValid()) {
+                        errorMessage = "Initial Key 0' Invalid";
+                        displayErrorScreen(errorMessage);
+                        break;
+                    }
+
+                    baseWalletPath = "0'";
+                    for (int l = 0; l < 4; l++) {
+                        uint32_t index = deriveIndexCpp(password, l);
+                        baseWalletPath += "/" + String(index) + "'";
+                    }
+                    hdWalletKey = hdMasterKey.derive(baseWalletPath.c_str());
+                    if (!hdWalletKey.isValid()) {
+                        errorMessage = "hdWallet Key Invalid";
+                        displayErrorScreen(errorMessage);
+                        break;
+                    }
+
+                    currentState = STATE_WALLET_VIEW;
+                    currentRotationIndex = 0;
                     Serial.println("L: -> Wallet View");
                 } else {
                     Serial.println("L: Not provisioned or mnem load failed. Generating new keys...");
                     uint8_t ent[16];
-                    esp_fill_random(ent,16); // ESP-IDF specific, ensure it's available
-                    generatedMnemonic = generateMnemonicFromEntropy(ent,16); // Needs global function
-                    if(generatedMnemonic.length()>0){
-                        currentState=STATE_SHOW_GENERATED_MNEMONIC;
+                    esp_fill_random(ent, 16);
+                    generatedMnemonic = generateMnemonicFromEntropy(ent, 16);
+                    if (generatedMnemonic.length() > 0) {
+                        currentState = STATE_SHOW_GENERATED_MNEMONIC;
                         Serial.println("L: -> Show Generated Mnemonic");
                     } else {
-                        errorMessage="Key Gen Fail!"; displayErrorScreen(errorMessage);
-                        passwordConfirmed=false; currentDigitIndex=0; currentDigitValue=0;
-                        memset(password,'_',PIN_LENGTH); password[PIN_LENGTH]='\0';
+                        errorMessage = "Key Gen Fail!";
+                        displayErrorScreen(errorMessage);
+                        passwordConfirmed = false;
+                        currentDigitIndex = 0;
+                        currentDigitValue = 0;
+                        memset(password, '_', PIN_LENGTH);
+                        password[PIN_LENGTH] = '\0';
                     }
                 }
             } else {
@@ -482,117 +561,143 @@ void loop() {
     case STATE_WALLET_VIEW: {
         bool walletNeedsRedraw = redrawScreen;
 
-        if(buttonSecretTriggered) {
-             Serial.println("L: Wallet: Secret Button -> Show Secret Mnemonic");
-             currentState = STATE_SHOW_SECRET_MNEMONIC;
-             goto end_wallet_view_logic;
+        if (buttonSecretTriggered) {
+            Serial.println("L: Wallet: Secret Button -> Show Secret Mnemonic");
+            currentState = STATE_SHOW_SECRET_MNEMONIC;
+            goto end_wallet_view_logic;
         }
-        else if(buttonLeftTriggered) {
-             currentRotationIndex=(currentRotationIndex==0)?MAX_ROTATION_INDEX:currentRotationIndex-1; // Needs global MAX_ROTATION_INDEX
-             Serial.printf("L: Wallet: Rotation -> %d\n", currentRotationIndex);
-             walletNeedsRedraw = true;
+        else if (buttonLeftTriggered) {
+            currentRotationIndex = (currentRotationIndex == 0) ? MAX_ROTATION_INDEX : currentRotationIndex - 1;
+            Serial.printf("L: Wallet: Prev Rotation -> %d\n", currentRotationIndex);
+            walletNeedsRedraw = true;
         }
-        else if(buttonRightTriggered) {
-             currentRotationIndex=(currentRotationIndex+1)%(MAX_ROTATION_INDEX+1);
-             Serial.printf("L: Wallet: Rotation -> %d\n", currentRotationIndex);
-             walletNeedsRedraw = true;
+        else if (buttonRightTriggered) {
+            currentRotationIndex = (currentRotationIndex + 1) % (MAX_ROTATION_INDEX + 1);
+            Serial.printf("L: Wallet: Next Rotation -> %d\n", currentRotationIndex);
+            walletNeedsRedraw = true;
         }
 
         if (walletNeedsRedraw) {
-             Serial.printf("L: Redrawing Wallet R%d (WIF format)\n", currentRotationIndex);
-             if(loadedMnemonic.length()==0){errorMessage="Mnem Missing!"; displayErrorScreen(errorMessage); break;}
-             if(!passwordConfirmed){errorMessage="PIN Not Confirmed"; displayErrorScreen(errorMessage); break;}
-             password[PIN_LENGTH]='\0';
+            Serial.printf("L: Redrawing Wallet R%d (WIF format)\n", currentRotationIndex);
+            if (loadedMnemonic.length() == 0) {
+                errorMessage = "Mnemonic Missing!";
+                displayErrorScreen(errorMessage);
+                break;
+            }
+            if (!passwordConfirmed) {
+                errorMessage = "PIN Not Confirmed";
+                displayErrorScreen(errorMessage);
+                break;
+            }
+            if (!hdWalletKey.isValid()) {
+                errorMessage = "hdWallet Key Invalid";
+                displayErrorScreen(errorMessage);
+                break;
+            }
+            password[PIN_LENGTH] = '\0';
+            Serial.print("PIN: ");
+            Serial.print(password);
+            Serial.print(" (bytes: ");
+            for (int i = 0; i <= PIN_LENGTH; i++) {
+                Serial.print((uint8_t)password[i], HEX);
+                Serial.print(" ");
+            }
+            Serial.println(")");
 
-             HDPrivateKey hdMasterKey(loadedMnemonic, "", &Mainnet); // Needs Mainnet to be global (from Networks.h)
-             if (!hdMasterKey.isValid()) { errorMessage = "MasterKey Invalid"; displayErrorScreen(errorMessage); break; }
+            // Initialize parentPath from baseWalletPath
+            String parentPath = baseWalletPath;
 
-             String pinDerivedPath="m";
-             for(int l=0;l<4;l++) pinDerivedPath+="/"+String(deriveIndexCpp(password,l))+"'"; // Needs global deriveIndexCpp
-             HDPrivateKey pN=hdMasterKey.derive(pinDerivedPath.c_str());
-             if (!pN.isValid()) { errorMessage = "PIN-Key Invalid"; displayErrorScreen(errorMessage); break; }
+            // Derive parent key by applying deriveSecurePath currentRotationIndex times
+            HDPrivateKey parentKey = hdWalletKey;
+            for (int r = 0; r < currentRotationIndex; r++) {
+                String rotationPath = "";
+                for (int l = 0; l < 4; l++) {
+                    uint32_t index = deriveIndexCpp(password, l);
+                    rotationPath += (l > 0 ? "/" : "") + String(index) + "'";
+                }
+                parentKey = parentKey.derive(rotationPath.c_str());
+                if (!parentKey.isValid()) {
+                    errorMessage = "Parent Key Invalid (Rotation " + String(r) + ")";
+                    displayErrorScreen(errorMessage);
+                    break;
+                }
+                // Append indices to parentPath
+                for (int l = 0; l < 4; l++) {
+                    uint32_t index = deriveIndexCpp(password, l);
+                    parentPath += "/" + String(index) + "'";
+                }
+            }
+            HDPrivateKey currentKey = parentKey;
+            if (!currentKey.isValid()) {
+                errorMessage = "Current Key Invalid";
+                displayErrorScreen(errorMessage);
+                break;
+            }
 
-             String path_n  ="0/"+String(currentRotationIndex);
-             String path_n1 ="0/"+String(currentRotationIndex+1);
-             String path_n2 ="0/"+String(currentRotationIndex+2);
+            // Pre-rotated key (b): Derive from currentKey
+            String preRotatedPath = "";
+            for (int l = 0; l < 4; l++) {
+                uint32_t index = deriveIndexCpp(password, l);
+                preRotatedPath += (l > 0 ? "/" : "") + String(index) + "'";
+            }
+            HDPrivateKey preRotatedKey = currentKey.derive(preRotatedPath.c_str());
+            if (!preRotatedKey.isValid()) {
+                errorMessage = "Pre-Rotated Key Invalid";
+                displayErrorScreen(errorMessage);
+                break;
+            }
 
-             String addr_n = "";
-             String wif_n = "";
-             String addr_n_plus_1 = "";
-             String addr_n_plus_2 = "";
-             bool derivation_ok = true;
-             String error_msg_detail = "";
+            // Twice-pre-rotated key (c): Derive from preRotatedKey
+            String twicePreRotatedPath = "";
+            for (int l = 0; l < 4; l++) {
+                uint32_t index = deriveIndexCpp(password, l);
+                twicePreRotatedPath += (l > 0 ? "/" : "") + String(index) + "'";
+            }
+            HDPrivateKey twicePreRotatedKey = preRotatedKey.derive(twicePreRotatedPath.c_str());
+            if (!twicePreRotatedKey.isValid()) {
+                errorMessage = "Twice-Pre-Rotated Key Invalid";
+                displayErrorScreen(errorMessage);
+                break;
+            }
 
-             HDPrivateKey hd_priv_n = pN.derive(path_n.c_str());
-             if (!hd_priv_n.isValid()) {
-                 error_msg_detail = "Key_n Fail R" + String(currentRotationIndex); derivation_ok = false;
-             } else {
-                 PublicKey pk_n = hd_priv_n.publicKey();
-                 if (!pk_n.isValid()) {
-                     error_msg_detail = "Pk_n Fail"; derivation_ok = false;
-                 } else {
-                     addr_n = pk_n.address(&Mainnet);
-                     if (addr_n.length() == 0) {
-                         error_msg_detail = "Addr_n Gen Fail"; derivation_ok = false;
-                     }
-                 }
+            // Generate addresses and WIF
+            String addr_n = currentKey.publicKey().address(&Mainnet);
+            String wif_n = currentKey.wif();
+            String addr_n_plus_1 = preRotatedKey.publicKey().address(&Mainnet);
+            String addr_n_plus_2 = twicePreRotatedKey.publicKey().address(&Mainnet);
+            bool derivation_ok = true;
+            String error_msg_detail = "";
 
-                 if (derivation_ok) {
-                     // HDPrivateKey inherits from PrivateKey, so hd_priv_n can call wif() directly.
-                     wif_n = hd_priv_n.wif(); // THIS IS THE LATEST CORRECTION POINT
-                     if (wif_n.length() == 0) {
-                         error_msg_detail = "WIF_n Gen Fail"; derivation_ok = false;
-                     }
-                 }
-             }
+            if (addr_n.length() == 0) {
+                error_msg_detail = "Addr_n Gen Fail";
+                derivation_ok = false;
+            }
+            if (wif_n.length() == 0) {
+                error_msg_detail = "WIF_n Gen Fail";
+                derivation_ok = false;
+            }
+            if (addr_n_plus_1.length() == 0) {
+                error_msg_detail = "Addr_n+1 Gen Fail";
+                derivation_ok = false;
+            }
+            if (addr_n_plus_2.length() == 0) {
+                error_msg_detail = "Addr_n+2 Gen Fail";
+                derivation_ok = false;
+            }
 
-             if (derivation_ok) {
-                 HDPrivateKey hd_priv_n1 = pN.derive(path_n1.c_str());
-                 if (!hd_priv_n1.isValid()) {
-                     error_msg_detail = "Key_n+1 Fail R" + String(currentRotationIndex + 1); derivation_ok = false;
-                 } else {
-                     PublicKey pk_n1 = hd_priv_n1.publicKey();
-                     if (!pk_n1.isValid()) {
-                         error_msg_detail = "Pk_n+1 Fail"; derivation_ok = false;
-                     } else {
-                         addr_n_plus_1 = pk_n1.address(&Mainnet);
-                         if (addr_n_plus_1.length() == 0) {
-                             error_msg_detail = "Addr_n+1 Gen Fail"; derivation_ok = false;
-                         }
-                     }
-                 }
-             }
-
-             if (derivation_ok) {
-                 HDPrivateKey hd_priv_n2 = pN.derive(path_n2.c_str());
-                 if (!hd_priv_n2.isValid()) {
-                     error_msg_detail = "Key_n+2 Fail R" + String(currentRotationIndex + 2); derivation_ok = false;
-                 } else {
-                     PublicKey pk_n2 = hd_priv_n2.publicKey();
-                     if (!pk_n2.isValid()) {
-                         error_msg_detail = "Addr_n+2 Fail"; derivation_ok = false;
-                     } else {
-                         addr_n_plus_2 = pk_n2.address();
-                         if (addr_n_plus_2.length() == 0) {
-                             error_msg_detail = "Addr_n+2 Gen Fail"; derivation_ok = false;
-                         }
-                     }
-                 }
-             }
-
-             if (derivation_ok) {
-                 String combinedQRData = addr_n + "|" + wif_n + "|" + addr_n_plus_1 + "|" + addr_n_plus_2;
-                 Serial.println("QR Data: " + combinedQRData);
-                 Serial.println("QR Data Length: " + String(combinedQRData.length()));
-                 int estimatedQrVersion = 11;
-                 displaySingleRotationQR(currentRotationIndex, combinedQRData, "Rotation", estimatedQrVersion); // Needs global function
-             } else {
-                 displayErrorScreen(error_msg_detail.length() > 0 ? error_msg_detail : "Derivation Error");
-             }
+            if (derivation_ok) {
+                String combinedQRData = addr_n + "|" + wif_n + "|" + addr_n_plus_1 + "|" + addr_n_plus_2;
+                Serial.println("QR Data: " + combinedQRData);
+                Serial.println("QR Data Length: " + String(combinedQRData.length()));
+                int estimatedQrVersion = 11;
+                displaySingleRotationQR(currentRotationIndex, combinedQRData, "Rotation", estimatedQrVersion);
+            } else {
+                displayErrorScreen(error_msg_detail.length() > 0 ? error_msg_detail : "Derivation Error");
+            }
         }
         end_wallet_view_logic:;
         break;
-      }
+    }
 
     case STATE_SHOW_SECRET_MNEMONIC:
       if(redrawScreen) displaySecretMnemonicScreen(loadedMnemonic); // Needs global function and variable

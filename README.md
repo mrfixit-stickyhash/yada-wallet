@@ -1,6 +1,6 @@
 # Yada Hardware Wallet 
 
-A DIY, air-gapped Yadacoin Hardware Wallet for ESP32, specifically demonstrated with the **ESP32-2432S028R (CYD / Cheap Yellow Display)**, featuring a TFT touchscreen. It generates, stores, and displays Yadacoin private keys (WIF) and addresses using a BIP39 mnemonic and a 6-digit PIN.
+A air-gapped Yadacoin Hardware Wallet for ESP32, specifically demonstrated with the **ESP32-2432S028R (CYD / Cheap Yellow Display)**, featuring a TFT touchscreen. It generates, stores, and displays Yadacoin private keys (WIF) and addresses using a BIP39 mnemonic and a 6-digit PIN.
 
 **Disclaimer:** This is an experimental project. **Use with extreme caution, for educational purposes only. You are solely responsible for the security of your funds.**
 

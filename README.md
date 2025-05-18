@@ -162,7 +162,7 @@ A DIY, air-gapped Yadacoin Hardware Wallet for ESP32, specifically demonstrated 
 *   **Wallet View:**
     *   Displays QR code with Address/WIF/Next Addresses.
     *   **Bottom-Left Touch:** "Prev" address rotation.
-    *   **Bottom-Right Touch:** "Next" address rotation. (*Note: This touch area is used even if the button is drawn bottom-right on some screens like PIN entry*).
+    *   **Bottom-Right Touch:** "Next" address rotation. 
     *   **Top-Right Touch (Small Button):** Show secret mnemonic.
 
 ## Key Derivation

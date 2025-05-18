@@ -32,9 +32,8 @@ A DIY, air-gapped Yadacoin Hardware Wallet for ESP32, specifically demonstrated 
         *   `uBitcoin` (by Stepan Snigirev)
         *   `TFT_eSPI` (by Bodmer)
         *   `XPT2046_Touchscreen` (by Paul Stoffregen)
-    *   **Manual Install for `QRCodeGenerator`:**
-        *   Download ZIP: [https://github.com/Tomstark/QRCodeGenerator](https://github.com/Tomstark/QRCodeGenerator)
-        *   In Arduino IDE: `Sketch > Include Library > Add .ZIP Library...` and select the downloaded file.
+        *   `QRCodeGenerator` (by Felix Erdmann - URL: [https://github.com/felixerdy/QRCodeGenerator]
+
     *   **Manual Install for `BigNumber`:**
         *   Download ZIP: [https://github.com/nickgammon/BigNumber](https://github.com/nickgammon/BigNumber)
         *   In Arduino IDE: `Sketch > Include Library > Add .ZIP Library...` and select the downloaded file.

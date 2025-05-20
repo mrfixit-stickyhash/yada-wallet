@@ -520,47 +520,71 @@ void loop() {
         if(buttonSecretTriggered) { currentState = STATE_SHOW_SECRET_MNEMONIC; goto end_wallet_view_logic;}
         else if(buttonLeftTriggered) { currentRotationIndex = (currentRotationIndex == 0) ? MAX_ROTATION_INDEX : currentRotationIndex - 1; walletNeedsRedrawLocal = true;}
         else if(buttonRightTriggered) { currentRotationIndex = (currentRotationIndex + 1) % (MAX_ROTATION_INDEX + 1); walletNeedsRedrawLocal = true;}
-        // buttonBottomRightTriggered is not used for actions in this wallet view configuration.
-
-        if (walletNeedsRedrawLocal) { 
+        
+        if (walletNeedsRedrawLocal) {
              if(loadedMnemonic.length()==0){errorMessage="Mnem Missing!"; displayErrorScreen(errorMessage); goto end_wallet_view_logic;}
              if(!passwordConfirmed){errorMessage="PIN Not Confirmed"; displayErrorScreen(errorMessage); goto end_wallet_view_logic;}
              if(!hdWalletKeyGlobal.isValid()){errorMessage="Global WalletKey Invalid!"; displayErrorScreen(errorMessage); goto end_wallet_view_logic;}
 
-             String dL="",bPS_str=""; int eQV=8; 
+             String dL="",bPS_str=""; int eQV=8;
              HDPrivateKey chainRootKey;
-             bool isEvmChainFormat = false; 
+             bool isEvmChainFormat = false;
 
              switch(selectedChainType){
-                case CHAIN_YADA:dL="Yada";bPS_str="0'"; isEvmChainFormat = false; eQV=11; break; 
-                case CHAIN_ETH:dL="ETH";bPS_str="1'"; isEvmChainFormat = true; eQV=11; break;  // eQV stays 11 due to long QR
-                case CHAIN_BSC:dL="BSC";bPS_str="2'"; isEvmChainFormat = true; eQV=11; break;  // eQV stays 11 due to long QR
+                case CHAIN_YADA:dL="Yada";bPS_str="0'"; isEvmChainFormat = false; eQV=11; break;
+                case CHAIN_ETH:dL="ETH";bPS_str="1'"; isEvmChainFormat = true; eQV=11; break;
+                case CHAIN_BSC:dL="BSC";bPS_str="2'"; isEvmChainFormat = true; eQV=11; break;
                 default:errorMessage="Bad Chain";displayErrorScreen(errorMessage);goto end_wallet_view_logic;
              }
              chainRootKey = hdWalletKeyGlobal.derive(bPS_str.c_str());
              if(!chainRootKey.isValid()){errorMessage=dL+" ChainRoot ("+bPS_str+") Fail"; displayErrorScreen(errorMessage);goto end_wallet_view_logic;}
 
-            HDPrivateKey parentKeyForRotation = chainRootKey;
+            HDPrivateKey parentKeyForRotation = chainRootKey; // This is the key after m/chain_specific_path'
+
+            // 1. Apply currentRotationIndex rotations.
+            //    Each rotation applies a 4-level path segment derived from 'password'.
             for (int r = 0; r < currentRotationIndex; r++) {
-                String rotationPathSegment = "";
-                for (int l_rot = 0; l_rot < 4; l_rot++) { 
-                    uint32_t index = deriveIndex(String(password), l_rot); 
+                String rotationPathSegment = ""; // This segment is based on the password
+                for (int l_rot = 0; l_rot < 4; l_rot++) {
+                    uint32_t index = deriveIndex(String(password), l_rot); // Password-based index
                     rotationPathSegment += (l_rot > 0 ? "/" : "") + String(index) + "'";
                 }
                 parentKeyForRotation = parentKeyForRotation.derive(rotationPathSegment.c_str());
-                if (!parentKeyForRotation.isValid()) { errorMessage = dL + " Rot Key Fail"; displayErrorScreen(errorMessage); goto end_wallet_view_logic; }
+                if (!parentKeyForRotation.isValid()) {
+                    errorMessage = dL + " Rot Key Fail (r=" + String(r) + ")";
+                    displayErrorScreen(errorMessage);
+                    goto end_wallet_view_logic;
+                }
             }
-            HDPrivateKey key_for_addr_n = parentKeyForRotation;
+            HDPrivateKey key_for_addr_n = parentKeyForRotation; // Key for addr_n and wif_n
 
-            String path_segment_for_plus1 = ""; 
-            for (int l_p1 = 0; l_p1 < 4; l_p1++) { uint32_t index = deriveIndex(String(password), l_p1); path_segment_for_plus1 += (l_p1 > 0 ? "/" : "") + String(index) + "'"; }
+            // 2. Derive key_for_addr_n_plus_1 from key_for_addr_n
+            //    by applying another 4-level path segment derived from 'password'.
+            String path_segment_for_plus1 = "";
+            for (int l_p1 = 0; l_p1 < 4; l_p1++) {
+                uint32_t index = deriveIndex(String(password), l_p1); // Password-based index, recalculated
+                path_segment_for_plus1 += (l_p1 > 0 ? "/" : "") + String(index) + "'";
+            }
             HDPrivateKey key_for_addr_n_plus_1 = key_for_addr_n.derive(path_segment_for_plus1.c_str());
-            if(!key_for_addr_n_plus_1.isValid()){errorMessage=dL+" Addr+1 KeyMat Fail"; displayErrorScreen(errorMessage);goto end_wallet_view_logic;}
+            if(!key_for_addr_n_plus_1.isValid()){
+                errorMessage=dL+" Addr+1 KeyMat Fail (Path: " + path_segment_for_plus1 + ")";
+                displayErrorScreen(errorMessage);
+                goto end_wallet_view_logic;
+            }
 
-            String path_segment_for_plus2 = ""; 
-            for (int l_p2 = 0; l_p2 < 4; l_p2++) { uint32_t index = deriveIndex(String(password), l_p2); path_segment_for_plus2 += (l_p2 > 0 ? "/" : "") + String(index) + "'"; }
-            HDPrivateKey key_for_addr_n_plus_2 = key_for_addr_n_plus_1.derive(path_segment_for_plus2.c_str()); 
-            if(!key_for_addr_n_plus_2.isValid()){errorMessage=dL+" Addr+2 KeyMat Fail"; displayErrorScreen(errorMessage);goto end_wallet_view_logic;}
+            // 3. Derive key_for_addr_n_plus_2 from key_for_addr_n_plus_1
+            //    by applying yet another 4-level path segment derived from 'password'.
+            String path_segment_for_plus2 = "";
+            for (int l_p2 = 0; l_p2 < 4; l_p2++) {
+                uint32_t index = deriveIndex(String(password), l_p2); // Password-based index, recalculated again
+                path_segment_for_plus2 += (l_p2 > 0 ? "/" : "") + String(index) + "'";
+            }
+            HDPrivateKey key_for_addr_n_plus_2 = key_for_addr_n_plus_1.derive(path_segment_for_plus2.c_str());
+            if(!key_for_addr_n_plus_2.isValid()){
+                errorMessage=dL+" Addr+2 KeyMat Fail (Path: " + path_segment_for_plus2 + ")";
+                displayErrorScreen(errorMessage);
+                goto end_wallet_view_logic;
+            }
 
             String addr_n_str, wif_n_str, addr_n_plus_1_str, addr_n_plus_2_str;
 
@@ -568,12 +592,12 @@ void loop() {
                 addr_n_str = getEvmAddress(key_for_addr_n);
                 addr_n_plus_1_str = getEvmAddress(key_for_addr_n_plus_1);
                 addr_n_plus_2_str = getEvmAddress(key_for_addr_n_plus_2);
-            } else { 
+            } else {
                 PublicKey pk0 = key_for_addr_n.publicKey(); pk0.compressed = true; addr_n_str = pk0.address(&Mainnet);
                 PublicKey pk1 = key_for_addr_n_plus_1.publicKey(); pk1.compressed = true; addr_n_plus_1_str = pk1.address(&Mainnet);
                 PublicKey pk2 = key_for_addr_n_plus_2.publicKey(); pk2.compressed = true; addr_n_plus_2_str = pk2.address(&Mainnet);
             }
-            wif_n_str = key_for_addr_n.wif(); 
+            wif_n_str = key_for_addr_n.wif();
 
             bool derivation_ok = true; String error_msg_detail = "";
             if (addr_n_str.length() == 0 || (isEvmChainFormat && addr_n_str.startsWith("EVM Addr Error"))) { error_msg_detail = "Addr_n Gen Fail"; derivation_ok = false; }
@@ -588,15 +612,15 @@ void loop() {
                 displayErrorScreen(error_msg_detail.length() > 0 ? error_msg_detail : dL + " Deriv QR Error");
                 goto end_wallet_view_logic;
             }
-             
+
             if(qrD_content.length()>0 && currentState==STATE_WALLET_VIEW) {
                 displaySingleRotationQR(currentRotationIndex,qrD_content,dL,eQV);
-            } else if (currentState==STATE_WALLET_VIEW) { 
+            } else if (currentState==STATE_WALLET_VIEW) {
                 displayErrorScreen(dL + " QR Data Empty");
             }
         }
         end_wallet_view_logic:; break;
-      } 
+      }
     case STATE_SHOW_SECRET_MNEMONIC: if(buttonLeftTriggered){ Serial.println("L: Exit Secret"); currentState = lastWalletState;} break;
     case STATE_ERROR: if(buttonLeftTriggered){ Serial.println("L: Err Ack"); currentState=STATE_CHAIN_SELECTION; currentDigitIndex=0; currentDigitValue=0; passwordConfirmed=false; memset(password,'_',PIN_LENGTH); password[PIN_LENGTH]='\0'; currentRotationIndex=0; } break;
     default: errorMessage="Unknown State"; displayErrorScreen(errorMessage); break;
